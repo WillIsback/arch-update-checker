@@ -27,6 +27,10 @@ DETAILED=true
 SHOW_CHANGELOG=true
 AUR_HELPER="yay" # can be yay or paru
 
+# Global arrays to track updates
+declare -a CRITICAL_UPDATES_OFFICIAL=()
+declare -a CRITICAL_UPDATES_AUR=()
+
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -252,55 +256,128 @@ check_aur_updates() {
 # Function to check for important updates (like VS Code)
 check_critical_packages() {
     print_section "CRITICAL PACKAGE STATUS"
-    
+
     local critical_packages=("code" "visual-studio-code-bin" "linux" "linux-lts")
     local found_updates=false
-    
+
     for pkg in "${critical_packages[@]}"; do
         if pacman -Q "${pkg}" &>/dev/null || "${AUR_HELPER}" -Q "${pkg}" &>/dev/null; then
             local current_ver
             current_ver=$(pacman -Q "${pkg}" 2>/dev/null | awk '{print $2}' || "${AUR_HELPER}" -Q "${pkg}" 2>/dev/null | awk '{print $2}')
-            
+
             local available_ver
-            available_ver=$(pacman -Si "${pkg}" 2>/dev/null | grep "Version" | awk '{print $3}' || "${AUR_HELPER}" -Si "${pkg}" 2>/dev/null | grep "Version" | awk '{print $3}')
-            
+            local is_aur=false
+
+            # Check official repos first
+            available_ver=$(pacman -Si "${pkg}" 2>/dev/null | grep "Version" | awk '{print $3}')
+
+            # If not in official repos, check AUR
+            if [[ -z "${available_ver}" ]]; then
+                available_ver=$("${AUR_HELPER}" -Si "${pkg}" 2>/dev/null | grep "Version" | awk '{print $3}')
+                is_aur=true
+            fi
+
             if [[ "${current_ver}" != "${available_ver}" ]] && [[ -n "${available_ver}" ]]; then
                 found_updates=true
                 echo -e "${RED}⚠ CRITICAL:${NC} ${pkg}" | tee -a "${REPORT_FILE}"
                 echo "  Installed: ${current_ver}" | tee -a "${REPORT_FILE}"
                 echo "  Available: ${available_ver}" | tee -a "${REPORT_FILE}"
                 echo "" | tee -a "${REPORT_FILE}"
+
+                # Track critical updates by source
+                if [[ "${is_aur}" == true ]]; then
+                    CRITICAL_UPDATES_AUR+=("${pkg}")
+                else
+                    CRITICAL_UPDATES_OFFICIAL+=("${pkg}")
+                fi
             fi
         fi
     done
-    
+
     if [[ "${found_updates}" == false ]]; then
         echo -e "${GREEN}✓ All critical packages are up to date${NC}" | tee -a "${REPORT_FILE}"
     fi
-    
+
     echo "" | tee -a "${REPORT_FILE}"
 }
 
 # Function to generate summary
 generate_summary() {
     print_section "SUMMARY"
-    
+
     local official_count
     local aur_count
-    official_count=$(checkupdates 2>/dev/null | wc -l)
+    official_count=$(checkupdates 2>/dev/null | wc -l 2>/dev/null || true)
+    [[ -z "$official_count" || "$official_count" == *$'\n'* ]] && official_count=0
+    aur_count=$("${AUR_HELPER}" -Qua 2>/dev/null | wc -l 2>/dev/null || true)
+    [[ -z "$aur_count" || "$aur_count" == *$'\n'* ]] && aur_count=0
+    # Ensure they are valid numbers
+    official_count=${official_count//[^0-9]/}
+    aur_count=${aur_count//[^0-9]/}
     [[ -z "$official_count" ]] && official_count=0
-    aur_count=$("${AUR_HELPER}" -Qua 2>/dev/null | wc -l)
     [[ -z "$aur_count" ]] && aur_count=0
     local total_count=$((official_count + aur_count))
+
+    local critical_count=$((${#CRITICAL_UPDATES_OFFICIAL[@]} + ${#CRITICAL_UPDATES_AUR[@]}))
 
     {
         echo "Total Updates Available: ${total_count}"
         echo "  - Official Repositories: ${official_count}"
         echo "  - AUR: ${aur_count}"
+
+        if [[ ${critical_count} -gt 0 ]]; then
+            echo "  - Critical Updates: ${critical_count}"
+        fi
+
         echo ""
-        echo "Update Commands:"
-        echo "  Official packages: sudo pacman -Syu"
-        echo "  All packages:      ${AUR_HELPER} -Syu"
+
+        # Suggest appropriate update command
+        if [[ ${critical_count} -gt 0 ]]; then
+            echo "Recommended Action:"
+
+            # Build package list for critical updates
+            local critical_pkgs=()
+            for pkg in "${CRITICAL_UPDATES_OFFICIAL[@]}"; do
+                critical_pkgs+=("${pkg}")
+            done
+            for pkg in "${CRITICAL_UPDATES_AUR[@]}"; do
+                critical_pkgs+=("${pkg}")
+            done
+
+            if [[ ${#critical_pkgs[@]} -gt 0 ]]; then
+                echo "  Update critical packages first:"
+
+                # Determine which command to use based on package sources
+                if [[ ${#CRITICAL_UPDATES_AUR[@]} -gt 0 ]]; then
+                    # If any critical packages are from AUR, use AUR helper
+                    echo "    ${AUR_HELPER} -S ${critical_pkgs[*]}"
+                else
+                    # All critical packages are from official repos
+                    echo "    sudo pacman -S ${critical_pkgs[*]}"
+                fi
+                echo ""
+            fi
+
+            if [[ ${total_count} -gt ${critical_count} ]]; then
+                echo "  Then update remaining packages:"
+                echo "    ${AUR_HELPER} -Syu"
+            fi
+        elif [[ ${total_count} -gt 0 ]]; then
+            echo "Recommended Action:"
+            echo "  Update all packages:"
+            if [[ ${aur_count} -gt 0 ]]; then
+                echo "    ${AUR_HELPER} -Syu"
+            else
+                echo "    sudo pacman -Syu"
+            fi
+        else
+            echo "✓ System is up to date"
+        fi
+
+        echo ""
+        echo "Alternative Update Commands:"
+        echo "  Official packages only: sudo pacman -Syu"
+        echo "  All packages:           ${AUR_HELPER} -Syu"
         echo ""
         echo "Report saved to: ${REPORT_FILE}"
     } | tee -a "${REPORT_FILE}"
@@ -314,8 +391,13 @@ send_notification() {
     
     local official_count
     local aur_count
-    official_count=$(checkupdates 2>/dev/null | wc -l || echo 0)
-    aur_count=$("${AUR_HELPER}" -Qua 2>/dev/null | wc -l || echo 0)
+    official_count=$(checkupdates 2>/dev/null | wc -l 2>/dev/null || true)
+    aur_count=$("${AUR_HELPER}" -Qua 2>/dev/null | wc -l 2>/dev/null || true)
+    # Ensure they are valid numbers
+    official_count=${official_count//[^0-9]/}
+    aur_count=${aur_count//[^0-9]/}
+    [[ -z "$official_count" ]] && official_count=0
+    [[ -z "$aur_count" ]] && aur_count=0
     local total_count=$((official_count + aur_count))
     
     if [[ ${total_count} -gt 0 ]]; then
