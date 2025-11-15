@@ -1,0 +1,33 @@
+# Configuration file for Package Update Checker
+# Place this file in: ~/.config/update-checker/config
+
+# AUR helper to use (yay or paru)
+AUR_HELPER="yay"
+
+# Enable desktop notifications (true/false)
+ENABLE_NOTIFICATIONS=true
+
+# Enable detailed output (true/false)
+DETAILED_OUTPUT=true
+
+# Show changelog information (true/false)
+SHOW_CHANGELOG=true
+
+# Critical packages to monitor (space-separated)
+# These packages will be highlighted in a special section
+CRITICAL_PACKAGES="code visual-studio-code-bin linux linux-lts"
+
+# Maximum number of changelog entries to show per package
+MAX_CHANGELOG_ENTRIES=3
+
+# Report directory (will be created if it doesn't exist)
+REPORT_DIR="${HOME}/.local/share/update-reports"
+
+# Keep reports for this many days (0 = keep forever)
+REPORT_RETENTION_DAYS=30
+
+# Notification urgency level (low, normal, critical)
+NOTIFICATION_URGENCY="normal"
+
+# Notification timeout in milliseconds (0 = default, -1 = never expire)
+NOTIFICATION_TIMEOUT=10000
